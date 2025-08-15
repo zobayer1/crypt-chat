@@ -25,7 +25,7 @@ UserSession *session_init() {
     uuid_random(&local_session->sid);
 
     char uuid_s[SESSION_ID_LEN];
-    uuid_str(local_session->sid, uuid_s);
+    uuid_to_str(local_session->sid, uuid_s);
     printf("Welcome, %s!\nSession ID: [%s]\n", local_session->username, uuid_s);
 
     local_session->nonce = generate_nonce();

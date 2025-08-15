@@ -21,6 +21,10 @@ static const char *protocol_type_to_str(ProtocolType type) {
         return "REJECT";
     case PROTOCOL_MSG:
         return "MSG";
+    case PROTOCOL_PKEY_OFFER:
+        return "PKEY_OFFER";
+    case PROTOCOL_PKEY_RESP:
+        return "PKEY_RESP";
     case PROTOCOL_ERROR:
     default:
         return "ERROR";
@@ -40,41 +44,56 @@ static ProtocolType protocol_str_to_type(const char *type_str, size_t type_len) 
         return PROTOCOL_CONN;
     if (type_len == 3 && strncmp(type_str, "MSG", 3) == 0)
         return PROTOCOL_MSG;
+    if (type_len == 10 && strncmp(type_str, "PKEY_OFFER", 10) == 0)
+        return PROTOCOL_PKEY_OFFER;
+    if (type_len == 9 && strncmp(type_str, "PKEY_RESP", 9) == 0)
+        return PROTOCOL_PKEY_RESP;
     return PROTOCOL_ERROR;
 }
 
 size_t protocol_prepare_conn_msg(char *buffer, size_t buf_len, const UserSession *session, uint64_t nonce) {
-    char uuid_str[37];
+    char uuid_str[SESSION_ID_LEN];
     uuid_unparse(session->sid, uuid_str);
     return snprintf(buffer, buf_len, "TYPE:%s\nID:%s\nNAME:%s\nNONCE:%" PRIu64 "\nEND\n",
                     protocol_type_to_str(PROTOCOL_CONN), uuid_str, session->username, nonce);
 }
 
-size_t protocol_prepare_conn_ack_msg(char *buffer, size_t buf_len, const UserSession *session, uint64_t nonce) {
-    char uuid_str[37];
+size_t protocol_prepare_conn_ack_msg(char *buffer, size_t buf_len, const UserSession *session, uint64_t nonce,
+                                     uint64_t reply_nonce) {
+    char uuid_str[SESSION_ID_LEN];
     uuid_unparse(session->sid, uuid_str);
-    return snprintf(buffer, buf_len, "TYPE:%s\nID:%s\nNAME:%s\nNONCE:%" PRIu64 "\nEND\n",
-                    protocol_type_to_str(PROTOCOL_CONN_ACK), uuid_str, session->username, nonce);
+    return snprintf(buffer, buf_len, "TYPE:%s\nID:%s\nNAME:%s\nNONCE:%" PRIu64 "\nREPLY_NONCE:%" PRIu64 "\nEND\n",
+                    protocol_type_to_str(PROTOCOL_CONN_ACK), uuid_str, session->username, nonce, reply_nonce);
 }
 
-size_t protocol_prepare_plain_msg(char *buffer, size_t buf_len, const char *message) {
-    return snprintf(buffer, buf_len, "TYPE:%s\nMESSAGE:%s\nEND\n", protocol_type_to_str(PROTOCOL_MSG), message);
-}
-
-size_t protocol_parse_plain_msg(const char *msg, char *body, size_t body_len) {
-    const char *body_line = strstr(msg, "MESSAGE:");
-    if (!body_line) {
-        body[0] = '\0';
-        return 0;
+size_t protocol_parse_conn_msg(const char *msg, UserSession *session, uint64_t *nonce, uint64_t *reply_nonce) {
+    char uuid_str[SESSION_ID_LEN] = {0};
+    char name[USERNAME_MAX_LEN] = {0};
+    char nonce_str[SESSION_NONCE_LEN] = {0};
+    const char *id_line = strstr(msg, "ID:");
+    const char *name_line = strstr(msg, "NAME:");
+    const char *nonce_line = strstr(msg, "NONCE:");
+    if (!id_line || !name_line || !nonce_line)
+        return -1;
+    sscanf(id_line, "ID:%36s", uuid_str);
+    sscanf(name_line, "NAME:%63s", name);
+    sscanf(nonce_line, "NONCE:%31s", nonce_str);
+    uuid_parse(uuid_str, session->sid);
+    strncpy(session->username, name, USERNAME_MAX_LEN);
+    session->username[USERNAME_MAX_LEN - 1] = '\0';
+    *nonce = strtoull(nonce_str, NULL, 10);
+    session->nonce = *nonce;
+    if (reply_nonce) {
+        const char *reply_nonce_line = strstr(msg, "REPLY_NONCE:");
+        if (reply_nonce_line) {
+            char reply_nonce_str[SESSION_NONCE_LEN] = {0};
+            sscanf(reply_nonce_line, "REPLY_NONCE:%31s", reply_nonce_str);
+            *reply_nonce = strtoull(reply_nonce_str, NULL, 10);
+        } else {
+            *reply_nonce = 0;
+        }
     }
-    const char *body_start = body_line + 8;
-    const char *body_end = strchr(body_start, '\n');
-    size_t len = body_end ? (size_t)(body_end - body_start) : strlen(body_start);
-    if (len >= body_len)
-        len = body_len - 1;
-    strncpy(body, body_start, len);
-    body[len] = '\0';
-    return len;
+    return strlen(msg);
 }
 
 size_t protocol_prepare_dc_msg(char *buffer, size_t buf_len, ProtocolType type, const char *reason) {
@@ -101,24 +120,89 @@ size_t protocol_parse_dc_msg(const char *msg, char *reason, size_t reason_len) {
     return len;
 }
 
-size_t protocol_parse_conn_msg(const char *msg, UserSession *session, uint64_t *nonce) {
+size_t protocol_prepare_pkey_offer_msg(char *buffer, size_t buf_len, const UserSession *session, uint64_t nonce,
+                                       const char *signature) {
+    char uuid_str[SESSION_ID_LEN];
+    uuid_unparse(session->sid, uuid_str);
+    return snprintf(buffer, buf_len, "TYPE:%s\nID:%s\nNONCE:%" PRIu64 "\nPUBKEY:%s\nSIG:%s\nEND\n",
+                    protocol_type_to_str(PROTOCOL_PKEY_OFFER), uuid_str, nonce, session->pubkey ? session->pubkey : "",
+                    signature ? signature : "");
+}
+
+size_t protocol_prepare_pkey_resp_msg(char *buffer, size_t buf_len, const UserSession *session, uint64_t nonce,
+                                      uint64_t reply_nonce, const char *signature) {
+    char uuid_str[SESSION_ID_LEN];
+    uuid_unparse(session->sid, uuid_str);
+    return snprintf(buffer, buf_len,
+                    "TYPE:%s\nID:%s\nNONCE:%" PRIu64 "\nREPLY_NONCE:%" PRIu64 "\nPUBKEY:%s\nSIG:%s\nEND\n",
+                    protocol_type_to_str(PROTOCOL_PKEY_RESP), uuid_str, nonce, reply_nonce,
+                    session->pubkey ? session->pubkey : "", signature ? signature : "");
+}
+
+int protocol_parse_pkey_msg(const char *msg, uuid_t *id, uint64_t *nonce, uint64_t *reply_nonce, char *pubkey,
+                            size_t pubkey_len, char *sig, size_t sig_len) {
     char uuid_str[SESSION_ID_LEN] = {0};
-    char name[USERNAME_MAX_LEN] = {0};
-    char nonce_str[SESSION_NONCE_LEN] = {0};
     const char *id_line = strstr(msg, "ID:");
-    const char *name_line = strstr(msg, "NAME:");
     const char *nonce_line = strstr(msg, "NONCE:");
-    if (!id_line || !name_line || !nonce_line)
+    const char *pubkey_line = strstr(msg, "PUBKEY:");
+    const char *sig_line = strstr(msg, "SIG:");
+    if (!id_line || !nonce_line || !pubkey_line || !sig_line)
         return -1;
+    // ID
     sscanf(id_line, "ID:%36s", uuid_str);
-    sscanf(name_line, "NAME:%63s", name);
+    uuid_parse(uuid_str, *id);
+    // NONCE
+    char nonce_str[SESSION_NONCE_LEN] = {0};
     sscanf(nonce_line, "NONCE:%31s", nonce_str);
-    uuid_parse(uuid_str, session->sid);
-    strncpy(session->username, name, USERNAME_MAX_LEN);
-    session->username[USERNAME_MAX_LEN - 1] = '\0';
     *nonce = strtoull(nonce_str, NULL, 10);
-    session->nonce = *nonce;
-    return strlen(msg);
+    // Optional REPLY_NONCE
+    if (reply_nonce) {
+        const char *reply_nonce_line = strstr(msg, "REPLY_NONCE:");
+        if (reply_nonce_line && reply_nonce_line < pubkey_line) {
+            char reply_nonce_str[SESSION_NONCE_LEN] = {0};
+            sscanf(reply_nonce_line, "REPLY_NONCE:%31s", reply_nonce_str);
+            *reply_nonce = strtoull(reply_nonce_str, NULL, 10);
+        } else {
+            *reply_nonce = 0;
+        }
+    }
+    // PUBKEY: from after 'PUBKEY:' to before 'SIG:'
+    const char *pubkey_start = pubkey_line + strlen("PUBKEY:");
+    const char *pubkey_end = sig_line;
+    size_t pk_len = (size_t)(pubkey_end - pubkey_start);
+    if (pk_len >= pubkey_len)
+        pk_len = pubkey_len - 1;
+    strncpy(pubkey, pubkey_start, pk_len);
+    pubkey[pk_len] = '\0';
+    // SIG: from after 'SIG:' to end of line
+    const char *sig_start = sig_line + strlen("SIG:");
+    const char *sig_end = strchr(sig_start, '\n');
+    size_t s_len = sig_end ? (size_t)(sig_end - sig_start) : strlen(sig_start);
+    if (s_len >= sig_len)
+        s_len = sig_len - 1;
+    strncpy(sig, sig_start, s_len);
+    sig[s_len] = '\0';
+    return 0;
+}
+
+size_t protocol_prepare_plain_msg(char *buffer, size_t buf_len, const char *message) {
+    return snprintf(buffer, buf_len, "TYPE:%s\nMESSAGE:%s\nEND\n", protocol_type_to_str(PROTOCOL_MSG), message);
+}
+
+size_t protocol_parse_plain_msg(const char *msg, char *body, size_t body_len) {
+    const char *body_line = strstr(msg, "MESSAGE:");
+    if (!body_line) {
+        body[0] = '\0';
+        return 0;
+    }
+    const char *body_start = body_line + 8;
+    const char *body_end = strchr(body_start, '\n');
+    size_t len = body_end ? (size_t)(body_end - body_start) : strlen(body_start);
+    if (len >= body_len)
+        len = body_len - 1;
+    strncpy(body, body_start, len);
+    body[len] = '\0';
+    return len;
 }
 
 ProtocolType protocol_parse_message(const char *msg, char *body, size_t body_len) {
@@ -134,7 +218,7 @@ ProtocolType protocol_parse_message(const char *msg, char *body, size_t body_len
     if (type == PROTOCOL_ERROR)
         return PROTOCOL_ERROR;
     const char *body_start = type_end + 1;
-    const char *end_line = strstr(body_start, "END");
+    const char *end_line = strstr(body_start, "\nEND");
     if (!end_line)
         return PROTOCOL_ERROR;
     size_t body_sz = (size_t)(end_line - body_start);

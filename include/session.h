@@ -15,6 +15,9 @@ typedef struct {
     uuid_t sid;
     char username[USERNAME_MAX_LEN];
     uint64_t nonce;
+    char *pubkey;
+    char *privkey;
+    char *sesskey;
 } UserSession;
 
 UserSession *session_init();
