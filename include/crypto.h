@@ -8,8 +8,8 @@
 #include <uuid/uuid.h>
 
 #define NONCE_GRACE_PERIOD_MS (5 * 60 * 1000)
-#define RSA2048_PUBKEY_PEM_SIZE 2048
-#define RSA2048_PRIVKEY_PEM_SIZE 8192
+#define RSA2048_PUBKEY_PEM_SIZE 1024
+#define RSA2048_PRIVKEY_PEM_SIZE 2048
 #define RSA2048_SIG_PEM_SIZE 512
 #define RSA2048_KEY_SIZE 256
 #define AES256_GCM_KEY_SIZE 32
@@ -43,5 +43,11 @@ int rsa_encrypt_key(const char *pubkey_pem, const unsigned char *key, size_t key
 
 int rsa_decrypt_key(const char *privkey_pem, const unsigned char *enc, size_t enc_len, unsigned char *key,
                     size_t *key_len);
+
+int aes256_gcm_encrypt(const char *buffer, const unsigned char *aeskey, unsigned char *out, size_t out_len,
+                       unsigned char *iv, unsigned char *tag);
+
+int aes256_gcm_decrypt(const unsigned char *ciphertext, size_t ciphertext_len, const unsigned char *aeskey,
+                       const unsigned char *iv, const unsigned char *tag, char *out, size_t out_len);
 
 #endif // CRYPTO_H

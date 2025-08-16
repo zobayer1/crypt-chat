@@ -283,3 +283,88 @@ void bytes_to_hex(const unsigned char *bytes, size_t len, char *out) {
     }
     out[2 * len] = '\0';
 }
+
+int aes256_gcm_encrypt(const char *buffer, const unsigned char *aeskey, unsigned char *out, size_t out_len,
+                       unsigned char *iv, unsigned char *tag) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    int len = 0, ciphertext_len = 0;
+    if (!ctx)
+        return -1;
+    if (RAND_bytes(iv, 12) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 12, NULL) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    if (EVP_EncryptInit_ex(ctx, NULL, NULL, aeskey, iv) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    size_t plaintext_len = strlen(buffer);
+    if (out_len < plaintext_len) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    if (EVP_EncryptUpdate(ctx, out, &len, (const unsigned char *)buffer, (int)plaintext_len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    ciphertext_len = len;
+    if (EVP_EncryptFinal_ex(ctx, out + len, &len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    ciphertext_len += len;
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    EVP_CIPHER_CTX_free(ctx);
+    return ciphertext_len;
+}
+
+int aes256_gcm_decrypt(const unsigned char *ciphertext, size_t ciphertext_len, const unsigned char *aeskey,
+                       const unsigned char *iv, const unsigned char *tag, char *out, size_t out_len) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    int len = 0;
+    size_t plaintext_len = 0;
+    if (!ctx)
+        return -1;
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 12, NULL) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    if (EVP_DecryptInit_ex(ctx, NULL, NULL, aeskey, iv) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    if (EVP_DecryptUpdate(ctx, (unsigned char *)out, &len, ciphertext, (int)ciphertext_len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    plaintext_len = len;
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, (void *)tag) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return -1;
+    }
+    int ret = EVP_DecryptFinal_ex(ctx, (unsigned char *)out + len, &len);
+    EVP_CIPHER_CTX_free(ctx);
+    if (ret > 0) {
+        plaintext_len += len;
+        if (plaintext_len >= out_len)
+            plaintext_len = out_len - 1;
+        out[plaintext_len] = '\0';
+        return (int)plaintext_len;
+    }
+    return -1;
+}

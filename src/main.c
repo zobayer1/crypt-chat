@@ -9,7 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define MAX_COMMAND_LEN 512
+#define MAX_COMMAND_LEN 2048
 
 int main(const int argc, const char **argv) {
     int port = 12345;
@@ -42,7 +42,8 @@ int main(const int argc, const char **argv) {
         if (FD_ISSET(network->pipefd[0], &readfds)) {
             char signal_buf[8];
             read(network->pipefd[0], signal_buf, sizeof(signal_buf));
-            printf("[%s]> ", network->local_session->username);
+            int is_e2e = network->session_active && network->remote_session->sesskey;
+            printf("[%s]%s> ", network->local_session->username, is_e2e ? "*" : "");
             fflush(stdout);
         }
         if (FD_ISSET(fileno(stdin), &readfds)) {
@@ -51,7 +52,8 @@ int main(const int argc, const char **argv) {
             }
             network_command(network, buffer);
             memset(buffer, 0, sizeof(buffer));
-            printf("[%s]> ", network->local_session->username);
+            int is_e2e = network->session_active && network->remote_session->sesskey;
+            printf("[%s]%s> ", network->local_session->username, is_e2e ? "*" : "");
             fflush(stdout);
         }
     }
