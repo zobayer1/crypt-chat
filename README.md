@@ -9,8 +9,8 @@ A secure TCP messaging application with end-to-end encryption, supporting:
 ## Dependencies
 
 - C++ 11 or higher
-- CMake 3.20 or higher
-- Libuuid-devel (`sudo dnf install libuuid-devel`)
+- CMake 3.20 or higher (`sudo dnf install cmake`)
+- Libuuid-devel (`sudo dnf install libuuid libuuid-devel`)
 - OpenSSL (`sudo dnf install openssl-devel`)
 
 ## Formatting and Styling
@@ -24,7 +24,7 @@ A secure TCP messaging application with end-to-end encryption, supporting:
 
 - Create a build directory:
   ```bash
-  mkdir build
+  mkdir -p build
   cd build
   ```
 - Run CMake to configure the project:
@@ -38,7 +38,7 @@ A secure TCP messaging application with end-to-end encryption, supporting:
 - Run the executable with a port number (e.g., 8090):
   ```bash
   export PORT=8090
-  ../bin/cse722 $PORT
+  ../bin/cryptochat $PORT
   ```
 
 ## License

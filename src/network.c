@@ -816,7 +816,36 @@ void network_stop(NetworkState *net) {
 }
 
 void network_command(NetworkState *network, const char *command) {
-    if (strncmp(command, ":connect ", 9) == 0) {
+    if (strcmp(command, ":help\n") == 0) {
+        printf(
+            "Available Commands:\n"
+            "\n"
+            ":help\n"
+            "    Show this help message.\n"
+            ":connect host:port\n"
+            "    Connect to a remote peer at the specified host and port.\n"
+            "    Example: :connect 192.168.1.10:9000\n"
+            "\n"
+            ":disconnect\n"
+            "    Disconnect from the current peer.\n"
+            "\n"
+            ":exchange pub [new]\n"
+            "    Exchange RSA public keys with the connected peer.\n"
+            "    Use 'new' to generate and send a new key pair.\n"
+            "\n"
+            ":exchange aes\n"
+            "    Exchange a new AES-256 session key with the connected peer.\n"
+            "    Requires both peers to have exchanged public keys.\n"
+            "\n"
+            ":quit\n"
+            "    Exit the application.\n"
+            "\n"
+            "<message>\n"
+            "    Any other input is sent as a message to the connected peer.\n"
+            "    If a session key is established, the message is encrypted.\n"
+            "\n"
+        );
+    } else if (strncmp(command, ":connect ", 9) == 0) {
         char host[256], port_s[16];
         if (sscanf(command + 9, "%255[^:]:%s", host, port_s) != 2) {
             printf("Invalid host format. Use: :connect host:port\n");
