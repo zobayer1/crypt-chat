@@ -32,8 +32,8 @@ int network_connect(NetworkState *net, const char *host, int port);
 
 void network_command(NetworkState *network, const char *command);
 
-ssize_t network_send(int sock, ProtocolType type, const char *payload, const UserSession *session, uint64_t nonce,
-                     uint64_t reply_nonce);
+ssize_t network_send(int sock, ProtocolType type, const char *payload, const UserSession *session,
+                     const UserSession *remote_session, uint64_t reply_nonce);
 
 int network_disconnect(NetworkState *net);
 

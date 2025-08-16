@@ -6,10 +6,11 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <sys/time.h>
 
 static int handle_openssl_error() {
-    ERR_print_errors_fp(stderr);
+    ERR_print_errors_fp(stdout);
     return EXIT_FAILURE;
 }
 
@@ -39,7 +40,6 @@ int generate_rsa_keypair(char *pubkey_pem, int pubkey_len, char *privkey_pem, in
     if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0)
         return handle_openssl_error();
 
-    printf("Generating RSA 2048-bit key pair...\n");
     EVP_PKEY *pkey = NULL;
     if (EVP_PKEY_keygen(ctx, &pkey) <= 0)
         return handle_openssl_error();
@@ -138,10 +138,7 @@ int rsa_verify_signature(const char *pubkey_pem, const unsigned char *msg, size_
     return 0;
 }
 
-int base64_encode(const unsigned char *in, size_t in_len, char *out, size_t out_len) {
-    size_t required = 4 * ((in_len + 2) / 3);
-    if (out_len <= required)
-        return -1;
+int base64_encode(const unsigned char *in, size_t in_len, char *out) {
     int enc_len = EVP_EncodeBlock((unsigned char *)out, in, (int)in_len);
     if (enc_len < 0)
         return -1;
@@ -149,10 +146,7 @@ int base64_encode(const unsigned char *in, size_t in_len, char *out, size_t out_
     return enc_len;
 }
 
-int base64_decode(const char *in, size_t in_len, unsigned char *out, size_t out_len) {
-    size_t required = (in_len / 4) * 3;
-    if (out_len < required)
-        return -1;
+int base64_decode(const char *in, size_t in_len, unsigned char *out) {
     int dec_len = EVP_DecodeBlock(out, (const unsigned char *)in, (int)in_len);
     if (dec_len < 0)
         return -1;
@@ -161,4 +155,131 @@ int base64_decode(const char *in, size_t in_len, unsigned char *out, size_t out_
         in_len--;
     }
     return dec_len;
+}
+
+int generate_aes256_key(unsigned char *key) {
+    if (RAND_bytes(key, 32) != 1) {
+        return handle_openssl_error();
+    }
+    return 0;
+}
+
+int rsa_encrypt_key(const char *pubkey_pem, const unsigned char *key, size_t key_len, unsigned char *enc,
+                    size_t *enc_len) {
+    BIO *bio = BIO_new_mem_buf(pubkey_pem, -1);
+    if (!bio)
+        return handle_openssl_error();
+    EVP_PKEY *pkey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
+    if (!pkey) {
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(pkey, NULL);
+    if (!ctx) {
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    if (EVP_PKEY_encrypt_init(ctx) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    size_t out_len = 0;
+    if (EVP_PKEY_encrypt(ctx, NULL, &out_len, key, key_len) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    if (enc == NULL || *enc_len < out_len) {
+        *enc_len = out_len;
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return -1;
+    }
+    if (EVP_PKEY_encrypt(ctx, enc, &out_len, key, key_len) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    *enc_len = out_len;
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    BIO_free(bio);
+    return 0;
+}
+
+int rsa_decrypt_key(const char *privkey_pem, const unsigned char *enc, size_t enc_len, unsigned char *key,
+                    size_t *key_len) {
+    BIO *bio = BIO_new_mem_buf(privkey_pem, -1);
+    if (!bio) {
+        return handle_openssl_error();
+    }
+    EVP_PKEY *pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    if (!pkey) {
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(pkey, NULL);
+    if (!ctx) {
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    if (EVP_PKEY_decrypt_init(ctx) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    size_t out_len = 0;
+    if (EVP_PKEY_decrypt(ctx, NULL, &out_len, enc, enc_len) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    if (key == NULL || *key_len < out_len) {
+        *key_len = out_len;
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return -1;
+    }
+    if (EVP_PKEY_decrypt(ctx, key, &out_len, enc, enc_len) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(pkey);
+        BIO_free(bio);
+        return handle_openssl_error();
+    }
+    *key_len = out_len;
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    BIO_free(bio);
+    return 0;
+}
+
+void bytes_to_hex(const unsigned char *bytes, size_t len, char *out) {
+    static const char hex_digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < len; ++i) {
+        out[2 * i] = hex_digits[(bytes[i] >> 4) & 0xF];
+        out[2 * i + 1] = hex_digits[bytes[i] & 0xF];
+    }
+    out[2 * len] = '\0';
 }

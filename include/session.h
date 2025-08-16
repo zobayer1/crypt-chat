@@ -17,7 +17,7 @@ typedef struct {
     uint64_t nonce;
     char *pubkey;
     char *privkey;
-    char *sesskey;
+    unsigned char *sesskey;
 } UserSession;
 
 UserSession *session_init();

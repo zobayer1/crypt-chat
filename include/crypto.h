@@ -11,10 +11,14 @@
 #define RSA2048_PUBKEY_PEM_SIZE 2048
 #define RSA2048_PRIVKEY_PEM_SIZE 8192
 #define RSA2048_SIG_PEM_SIZE 512
+#define RSA2048_KEY_SIZE 256
+#define AES256_GCM_KEY_SIZE 32
 
 void uuid_random(uuid_t *uuid);
 
 void uuid_to_str(const uuid_t uuid, char *out);
+
+void bytes_to_hex(const unsigned char *bytes, size_t len, char *out);
 
 uint64_t generate_nonce();
 
@@ -28,8 +32,16 @@ int rsa_sign_message(const char *privkey_pem, const unsigned char *msg, size_t m
 int rsa_verify_signature(const char *pubkey_pem, const unsigned char *msg, size_t msg_len, const unsigned char *sig,
                          size_t sig_len);
 
-int base64_encode(const unsigned char *in, size_t in_len, char *out, size_t out_len);
+int base64_encode(const unsigned char *in, size_t in_len, char *out);
 
-int base64_decode(const char *in, size_t in_len, unsigned char *out, size_t out_len);
+int base64_decode(const char *in, size_t in_len, unsigned char *out);
+
+int generate_aes256_key(unsigned char *key);
+
+int rsa_encrypt_key(const char *pubkey_pem, const unsigned char *key, size_t key_len, unsigned char *enc,
+                    size_t *enc_len);
+
+int rsa_decrypt_key(const char *privkey_pem, const unsigned char *enc, size_t enc_len, unsigned char *key,
+                    size_t *key_len);
 
 #endif // CRYPTO_H

@@ -61,8 +61,7 @@ static int send_existing_pubkey(const NetworkState *network, const ProtocolType 
         return -1;
     }
     network->local_session->nonce = max_uint64(generate_nonce(), network->local_session->nonce + 1);
-    if (network_send(network->active_sock, protocol, NULL, network->local_session, network->local_session->nonce,
-                     reply_nonce) < 0) {
+    if (network_send(network->active_sock, protocol, NULL, network->local_session, NULL, reply_nonce) < 0) {
         return -1;
     }
     return 0;
@@ -78,8 +77,23 @@ static int send_new_pubkey(const NetworkState *network, const ProtocolType proto
         return -1;
     }
     network->local_session->nonce = max_uint64(generate_nonce(), network->local_session->nonce + 1);
-    if (network_send(network->active_sock, protocol, NULL, network->local_session, network->local_session->nonce,
-                     reply_nonce) < 0) {
+    if (network_send(network->active_sock, protocol, NULL, network->local_session, NULL, reply_nonce) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int send_new_sesskey(const NetworkState *network) {
+    free(network->remote_session->sesskey);
+    network->remote_session->sesskey = malloc(AES256_GCM_KEY_SIZE + 1);
+    if (generate_aes256_key(network->remote_session->sesskey) != 0) {
+        free(network->remote_session->sesskey);
+        return -1;
+    }
+    network->local_session->nonce = max_uint64(generate_nonce(), network->local_session->nonce + 1);
+    if (network_send(network->active_sock, PROTOCOL_SESSKEY_OFFER, NULL, network->local_session,
+                     network->remote_session, 0) < 0) {
+        free(network->remote_session->sesskey);
         return -1;
     }
     return 0;
@@ -110,7 +124,7 @@ static void *message_callback(void *arg) {
             uint64_t curr_nonce = generate_nonce();
             protocol_parse_conn_msg(body, session, &msg_nonce, NULL);
             if (!nonce_within_grace(msg_nonce, curr_nonce)) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, 0, 0);
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Bad Nonce");
                 free(session);
@@ -123,8 +137,7 @@ static void *message_callback(void *arg) {
             net->local_session->nonce =
                 max_uint64(max_uint64(msg_nonce, net->local_session->nonce + 1), generate_nonce());
 
-            network_send(net->active_sock, PROTOCOL_CONN_ACK, NULL, net->local_session, net->local_session->nonce,
-                         msg_nonce);
+            network_send(net->active_sock, PROTOCOL_CONN_ACK, NULL, net->local_session, NULL, msg_nonce);
 
             uuid_to_str(net->remote_session->sid, uuid_s);
             print_and_signal(net->pipefd[1], "\1", "\nConnected to %s\n%s [%s]\n", net->remote_peer,
@@ -142,7 +155,7 @@ static void *message_callback(void *arg) {
             uint64_t msg_nonce = 0, reply_nonce = 0;
             protocol_parse_conn_msg(body, session, &msg_nonce, &reply_nonce);
             if (reply_nonce - 1 != net->local_session->nonce) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, 0, 0);
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Bad Nonce");
                 free(session);
@@ -169,7 +182,7 @@ static void *message_callback(void *arg) {
                 print_and_signal(net->pipefd[1], "\1", "\n[%s]> %s\n", net->remote_session->username, msg);
             }
             pthread_mutex_unlock(&net->lock);
-        } else if (type == PROTOCOL_PKEY_OFFER) {
+        } else if (type == PROTOCOL_PUBKEY_OFFER) {
             pthread_mutex_lock(&net->lock);
             if (!net->session_active) {
                 pthread_mutex_unlock(&net->lock);
@@ -179,23 +192,24 @@ static void *message_callback(void *arg) {
             uint64_t msg_nonce = 0;
             char pubkey[RSA2048_PUBKEY_PEM_SIZE] = {0};
             char sig_b64[RSA2048_SIG_PEM_SIZE] = {0};
-            unsigned char sig[RSA2048_SIG_PEM_SIZE] = {0};
+
             int parsed = protocol_parse_pkey_msg(body, &remote_id, &msg_nonce, NULL, pubkey,
                                                  RSA2048_PUBKEY_PEM_SIZE - 1, sig_b64, RSA2048_SIG_PEM_SIZE - 1);
             if (parsed < 0 || uuid_is_null(remote_id) || msg_nonce == 0 || !pubkey[0] || !sig_b64[0]) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Public Key Offer", NULL, 0, 0);
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Public Key Offer", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Bad Public Key Offer");
                 break;
             }
             if (msg_nonce <= net->remote_session->nonce) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, 0, 0);
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Bad Nonce");
                 break;
             }
-            if (base64_decode(sig_b64, strlen(sig_b64), sig, sizeof(sig)) < 0) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Signature Format", NULL, 0, 0);
+            unsigned char sig[RSA2048_KEY_SIZE + 4] = {0};
+            if (base64_decode(sig_b64, strlen(sig_b64), sig) < 0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Signature Format", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Bad Signature Format");
                 break;
@@ -203,36 +217,38 @@ static void *message_callback(void *arg) {
             unsigned char sig_msg[SESSION_ID_LEN + RSA2048_PUBKEY_PEM_SIZE + SESSION_NONCE_LEN] = {0};
             uuid_to_str(remote_id, uuid_s);
             size_t sig_msg_len = snprintf((char *)sig_msg, sizeof(sig_msg), "%s%s%" PRIu64, pubkey, uuid_s, msg_nonce);
-            if (rsa_verify_signature(pubkey, sig_msg, sig_msg_len, sig, 256) != 0) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Signature Verification Failed", NULL, 0, 0);
+            if (rsa_verify_signature(pubkey, sig_msg, sig_msg_len, sig, RSA2048_KEY_SIZE) != 0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Signature Verification Failed", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Signature Verification Failed");
                 break;
             }
             printf("\nReceived public key from %s\n%s", net->remote_session->username, pubkey);
+
             msg_nonce++;
             free_session_keys(net->remote_session);
             net->remote_session->pubkey = malloc(RSA2048_PUBKEY_PEM_SIZE);
             strcpy(net->remote_session->pubkey, pubkey);
-
             net->remote_session->nonce = msg_nonce;
             net->local_session->nonce =
                 max_uint64(max_uint64(msg_nonce, net->local_session->nonce + 1), generate_nonce());
+
             int pkey_sent = 0;
             if (net->local_session->pubkey && net->local_session->privkey) {
-                pkey_sent = send_existing_pubkey(net, PROTOCOL_PKEY_RESP, msg_nonce);
+                pkey_sent = send_existing_pubkey(net, PROTOCOL_PUBKEY_RESP, msg_nonce);
             } else {
-                pkey_sent = send_new_pubkey(net, PROTOCOL_PKEY_RESP, msg_nonce);
+                pkey_sent = send_new_pubkey(net, PROTOCOL_PUBKEY_RESP, msg_nonce);
             }
             if (pkey_sent < 0) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Public Key Exchange Failed", NULL, 0, 0);
+                network_send(net->active_sock, PROTOCOL_REJECT, "Public Key Exchange Failed", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Failed to send public key");
                 break;
             }
-            print_and_signal(net->pipefd[1], "\1", "Pubkey exchange complete\n%s", net->local_session->pubkey);
+            printf("Sent public key to %s\n%s", net->remote_session->username, net->local_session->pubkey);
+            print_and_signal(net->pipefd[1], "\1", "Public key exchange completed\n");
             pthread_mutex_unlock(&net->lock);
-        } else if (type == PROTOCOL_PKEY_RESP) {
+        } else if (type == PROTOCOL_PUBKEY_RESP) {
             pthread_mutex_lock(&net->lock);
             if (!net->session_active) {
                 pthread_mutex_unlock(&net->lock);
@@ -242,24 +258,25 @@ static void *message_callback(void *arg) {
             uint64_t msg_nonce = 0, reply_nonce = 0;
             char pubkey[RSA2048_PUBKEY_PEM_SIZE] = {0};
             char sig_b64[RSA2048_SIG_PEM_SIZE] = {0};
-            unsigned char sig[RSA2048_SIG_PEM_SIZE] = {0};
+
             int parsed = protocol_parse_pkey_msg(body, &remote_id, &msg_nonce, &reply_nonce, pubkey,
                                                  RSA2048_PUBKEY_PEM_SIZE - 1, sig_b64, RSA2048_SIG_PEM_SIZE - 1);
             if (parsed < 0 || uuid_is_null(remote_id) || msg_nonce == 0 || reply_nonce == 0 || !pubkey[0] ||
                 !sig_b64[0]) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Public Key Response", NULL, 0, 0);
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Public Key Response", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Bad Public Key Response");
                 break;
             }
             if (reply_nonce - 1 != net->local_session->nonce) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, 0, 0);
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Bad Nonce");
                 break;
             }
-            if (base64_decode(sig_b64, strlen(sig_b64), sig, sizeof(sig)) < 0) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Signature Format", NULL, 0, 0);
+            unsigned char sig[RSA2048_KEY_SIZE + 4] = {0};
+            if (base64_decode(sig_b64, strlen(sig_b64), sig) < 0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Signature Format", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Bad Signature Format");
                 break;
@@ -268,8 +285,8 @@ static void *message_callback(void *arg) {
             uuid_to_str(remote_id, uuid_s);
             size_t sig_msg_len = snprintf((char *)sig_msg, sizeof(sig_msg), "%s%s%" PRIu64 "%" PRIu64, pubkey, uuid_s,
                                           msg_nonce, reply_nonce);
-            if (rsa_verify_signature(pubkey, sig_msg, sig_msg_len, sig, 256) != 0) {
-                network_send(net->active_sock, PROTOCOL_REJECT, "Signature Verification Failed", NULL, 0, 0);
+            if (rsa_verify_signature(pubkey, sig_msg, sig_msg_len, sig, RSA2048_KEY_SIZE) != 0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Signature Verification Failed", NULL, NULL, 0);
                 pthread_mutex_unlock(&net->lock);
                 strcpy(reason, "Signature Verification Failed");
                 break;
@@ -282,7 +299,134 @@ static void *message_callback(void *arg) {
             net->remote_session->nonce = msg_nonce;
             net->local_session->nonce = max_uint64(generate_nonce(), max_uint64(reply_nonce, msg_nonce));
             pthread_mutex_unlock(&net->lock);
-            print_and_signal(net->pipefd[1], "\1", "Pubkey exchange complete\n");
+            print_and_signal(net->pipefd[1], "\1", "Public key exchange completed\n");
+        } else if (type == PROTOCOL_SESSKEY_OFFER) {
+            pthread_mutex_lock(&net->lock);
+            if (!net->session_active) {
+                pthread_mutex_unlock(&net->lock);
+                continue;
+            }
+            uuid_t remote_id;
+            uint64_t msg_nonce = 0;
+            char aeskey_b64[RSA2048_SIG_PEM_SIZE] = {0};
+            char sig_b64[RSA2048_SIG_PEM_SIZE] = {0};
+            int parsed = protocol_parse_sesskey_msg(body, &remote_id, &msg_nonce, NULL, aeskey_b64,
+                                                    RSA2048_SIG_PEM_SIZE - 1, sig_b64, RSA2048_SIG_PEM_SIZE - 1);
+            if (parsed < 0 || uuid_is_null(remote_id) || msg_nonce == 0 || !aeskey_b64[0] || !sig_b64[0]) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Session Key Offer", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Bad Session Key Offer");
+                break;
+            }
+            if (msg_nonce <= net->remote_session->nonce) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Bad Nonce");
+                break;
+            }
+            unsigned char aeskey[RSA2048_KEY_SIZE + 4] = {0};
+            int aeskey_decoded_len = base64_decode(aeskey_b64, strlen(aeskey_b64), aeskey);
+            if (aeskey_decoded_len != 256) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad AES Key Format", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Bad AES Key Format");
+                break;
+            }
+            unsigned char sig[RSA2048_KEY_SIZE + 4] = {0};
+            if (base64_decode(sig_b64, strlen(sig_b64), sig) < 0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Signature Format", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Bad Signature Format");
+                break;
+            }
+            unsigned char sig_input[RSA2048_SIG_PEM_SIZE + SESSION_ID_LEN + SESSION_NONCE_LEN] = {0};
+            uuid_to_str(remote_id, uuid_s);
+            size_t sig_input_len =
+                snprintf((char *)sig_input, sizeof(sig_input), "%s%s%" PRIu64, aeskey_b64, uuid_s, msg_nonce);
+            if (rsa_verify_signature(net->remote_session->pubkey, sig_input, sig_input_len, sig, RSA2048_KEY_SIZE) !=
+                0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Signature Verification Failed", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Signature Verification Failed");
+                break;
+            }
+            unsigned char decrypted_key[RSA2048_KEY_SIZE] = {0};
+            size_t decrypted_key_len = sizeof(decrypted_key);
+            int dec_result = rsa_decrypt_key(net->local_session->privkey, aeskey, aeskey_decoded_len, decrypted_key,
+                                             &decrypted_key_len);
+            if (dec_result != 0 || decrypted_key_len != AES256_GCM_KEY_SIZE) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Session Key Decryption Failed", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Session Key Decryption Failed");
+                break;
+            }
+
+            msg_nonce++;
+            free(net->remote_session->sesskey);
+            net->remote_session->sesskey = malloc(AES256_GCM_KEY_SIZE);
+            memcpy(net->remote_session->sesskey, decrypted_key, AES256_GCM_KEY_SIZE);
+            net->remote_session->nonce = msg_nonce;
+            net->local_session->nonce =
+                max_uint64(max_uint64(msg_nonce, net->local_session->nonce + 1), generate_nonce());
+            char hex_str[2 * AES256_GCM_KEY_SIZE + 1] = {0};
+            bytes_to_hex(net->remote_session->sesskey, AES256_GCM_KEY_SIZE, hex_str);
+            printf("\nReceived session key from %s:\n%s\n", net->remote_session->username, hex_str);
+
+            if (network_send(net->active_sock, PROTOCOL_SESSKEY_RESP, NULL, net->local_session, NULL, msg_nonce) < 0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Session Key Exchange Failed", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Failed to exchange session key");
+                break;
+            }
+            print_and_signal(net->pipefd[1], "\1", "Acknowledged to %s\nSession key exchange completed\n",
+                             net->remote_session->username);
+            pthread_mutex_unlock(&net->lock);
+        } else if (type == PROTOCOL_SESSKEY_RESP) {
+            pthread_mutex_lock(&net->lock);
+            if (!net->session_active) {
+                pthread_mutex_unlock(&net->lock);
+                continue;
+            }
+            uuid_t remote_id;
+            uint64_t msg_nonce = 0, reply_nonce = 0;
+            char sig_b64[RSA2048_SIG_PEM_SIZE] = {0};
+            int parsed = protocol_parse_sesskey_msg(body, &remote_id, &msg_nonce, &reply_nonce, NULL, 0, sig_b64,
+                                                    RSA2048_SIG_PEM_SIZE - 1);
+            if (parsed < 0 || uuid_is_null(remote_id) || msg_nonce == 0 || reply_nonce == 0 || !sig_b64[0]) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Session Key Response", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Bad Session Key Response");
+                break;
+            }
+            if (reply_nonce - 1 != net->local_session->nonce) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Nonce", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Bad Nonce");
+                break;
+            }
+            unsigned char sig[RSA2048_KEY_SIZE + 4] = {0};
+            if (base64_decode(sig_b64, strlen(sig_b64), sig) < 0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Signature Format", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Bad Signature Format");
+                break;
+            }
+            uuid_to_str(remote_id, uuid_s);
+            unsigned char sig_input[2 * SESSION_NONCE_LEN + SESSION_ID_LEN] = {0};
+            size_t sig_input_len =
+                snprintf((char *)sig_input, sizeof(sig_input), "%" PRIu64 "%s%" PRIu64, reply_nonce, uuid_s, msg_nonce);
+            if (rsa_verify_signature(net->remote_session->pubkey, sig_input, sig_input_len, sig, RSA2048_KEY_SIZE) !=
+                0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Signature Verification Failed", NULL, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Signature Verification Failed");
+                break;
+            }
+
+            net->remote_session->nonce = msg_nonce;
+            net->local_session->nonce = max_uint64(generate_nonce(), max_uint64(reply_nonce, msg_nonce));
+            pthread_mutex_unlock(&net->lock);
+            print_and_signal(net->pipefd[1], "\1", "\nSession key exchange completed\n");
         }
         memset(buffer, 0, sizeof buffer);
     }
@@ -305,7 +449,7 @@ static void *listener_callback(void *arg) {
             break;
         pthread_mutex_lock(&net->lock);
         if (net->connection_active) {
-            network_send(client_sock, PROTOCOL_REJECT, "Peer Busy", NULL, 0, 0);
+            network_send(client_sock, PROTOCOL_REJECT, "Peer Busy", NULL, NULL, 0);
             close(client_sock);
         } else {
             net->active_sock = client_sock;
@@ -411,26 +555,26 @@ int network_connect(NetworkState *net, const char *host, int port) {
 
     uint64_t nonce = generate_nonce();
     net->local_session->nonce = nonce > net->local_session->nonce ? nonce : net->local_session->nonce + 1;
-    network_send(net->active_sock, PROTOCOL_CONN, NULL, net->local_session, net->local_session->nonce, 0);
+    network_send(net->active_sock, PROTOCOL_CONN, NULL, net->local_session, NULL, 0);
     pthread_mutex_unlock(&net->lock);
     return 0; // Success
 }
 
 ssize_t network_send(const int sock, const ProtocolType type, const char *payload, const UserSession *session,
-                     const uint64_t nonce, const uint64_t reply_nonce) {
+                     const UserSession *remote_session, const uint64_t reply_nonce) {
     if (sock < 0)
         return -1;
     char msg[PROTOCOL_MSG_MAX_LEN] = {0};
     size_t len = 0;
     if (type == PROTOCOL_CONN && session) {
-        len = protocol_prepare_conn_msg(msg, sizeof(msg), session, nonce);
+        len = protocol_prepare_conn_msg(msg, sizeof(msg), session, session->nonce);
     } else if (type == PROTOCOL_CONN_ACK && session) {
-        len = protocol_prepare_conn_ack_msg(msg, sizeof(msg), session, nonce, reply_nonce);
-    } else if (type == PROTOCOL_PKEY_OFFER && session) {
+        len = protocol_prepare_conn_ack_msg(msg, sizeof(msg), session, session->nonce, reply_nonce);
+    } else if (type == PROTOCOL_PUBKEY_OFFER && session) {
         unsigned char data[SESSION_ID_LEN + RSA2048_PUBKEY_PEM_SIZE + SESSION_NONCE_LEN] = {0};
         char uuid_s[SESSION_ID_LEN] = {0};
         uuid_to_str(session->sid, uuid_s);
-        size_t data_len = snprintf((char *)data, sizeof(data), "%s%s%" PRIu64, session->pubkey, uuid_s, nonce);
+        size_t data_len = snprintf((char *)data, sizeof(data), "%s%s%" PRIu64, session->pubkey, uuid_s, session->nonce);
         unsigned char *sig = NULL;
         size_t sig_len = 0;
         if (rsa_sign_message(session->privkey, data, data_len, &sig, &sig_len) != 0) {
@@ -439,20 +583,20 @@ ssize_t network_send(const int sock, const ProtocolType type, const char *payloa
             return -1;
         }
         char sig_b64[RSA2048_SIG_PEM_SIZE] = {0};
-        if (base64_encode(sig, sig_len, sig_b64, sizeof(sig_b64)) < 0) {
+        if (base64_encode(sig, sig_len, sig_b64) < 0) {
             if (sig)
                 free(sig);
             return -1;
         }
-        len = protocol_prepare_pkey_offer_msg(msg, sizeof(msg), session, nonce, sig_b64);
+        len = protocol_prepare_pkey_offer_msg(msg, sizeof(msg), session, session->nonce, sig_b64);
         if (sig)
             free(sig);
-    } else if (type == PROTOCOL_PKEY_RESP && session) {
+    } else if (type == PROTOCOL_PUBKEY_RESP && session) {
         unsigned char data[SESSION_ID_LEN + RSA2048_PUBKEY_PEM_SIZE + 2 * SESSION_NONCE_LEN] = {0};
         char uuid_s[SESSION_ID_LEN] = {0};
         uuid_to_str(session->sid, uuid_s);
         size_t data_len = snprintf((char *)data, sizeof(data), "%s%s%" PRIu64 "%" PRIu64, session->pubkey, uuid_s,
-                                   nonce, reply_nonce);
+                                   session->nonce, reply_nonce);
         unsigned char *sig = NULL;
         size_t sig_len = 0;
         if (rsa_sign_message(session->privkey, data, data_len, &sig, &sig_len) != 0) {
@@ -461,12 +605,73 @@ ssize_t network_send(const int sock, const ProtocolType type, const char *payloa
             return -1;
         }
         char sig_b64[RSA2048_SIG_PEM_SIZE] = {0};
-        if (base64_encode(sig, sig_len, sig_b64, sizeof(sig_b64)) < 0) {
+        if (base64_encode(sig, sig_len, sig_b64) < 0) {
             if (sig)
                 free(sig);
             return -1;
         }
-        len = protocol_prepare_pkey_resp_msg(msg, sizeof(msg), session, nonce, reply_nonce, sig_b64);
+        len = protocol_prepare_pkey_resp_msg(msg, sizeof(msg), session, session->nonce, reply_nonce, sig_b64);
+        if (sig)
+            free(sig);
+    } else if (type == PROTOCOL_SESSKEY_OFFER && session && remote_session) {
+        unsigned char enc_key[RSA2048_KEY_SIZE + 1] = {0};
+        size_t enc_key_len = sizeof(enc_key);
+        if (rsa_encrypt_key(remote_session->pubkey, remote_session->sesskey, AES256_GCM_KEY_SIZE, enc_key,
+                            &enc_key_len) != 0) {
+            return -1;
+        }
+
+        char aeskey_b64[RSA2048_SIG_PEM_SIZE] = {0};
+        if (base64_encode(enc_key, enc_key_len, aeskey_b64) < 0) {
+            return -1;
+        }
+
+        char uuid_str[SESSION_ID_LEN] = {0};
+        uuid_to_str(session->sid, uuid_str);
+        unsigned char sig_input[RSA2048_SIG_PEM_SIZE + SESSION_ID_LEN + SESSION_NONCE_LEN] = {0};
+        size_t sig_input_len =
+            snprintf((char *)sig_input, sizeof(sig_input), "%s%s%" PRIu64, aeskey_b64, uuid_str, session->nonce);
+
+        unsigned char *sig = NULL;
+        size_t sig_len = 0;
+        if (rsa_sign_message(session->privkey, sig_input, sig_input_len, &sig, &sig_len) != 0) {
+            if (sig)
+                free(sig);
+            return -1;
+        }
+
+        char sig_b64[RSA2048_SIG_PEM_SIZE] = {0};
+        if (base64_encode(sig, sig_len, sig_b64) < 0) {
+            if (sig)
+                free(sig);
+            return -1;
+        }
+
+        len = protocol_prepare_sesskey_offer_msg(msg, sizeof(msg), session, session->nonce, aeskey_b64, sig_b64);
+        if (sig)
+            free(sig);
+    } else if (type == PROTOCOL_SESSKEY_RESP && session) {
+        char uuid_str[SESSION_ID_LEN] = {0};
+        uuid_to_str(session->sid, uuid_str);
+        unsigned char sig_input[2 * SESSION_NONCE_LEN + SESSION_ID_LEN] = {0};
+        size_t sig_input_len = snprintf((char *)sig_input, sizeof(sig_input), "%" PRIu64 "%s%" PRIu64, reply_nonce,
+                                        uuid_str, session->nonce);
+        unsigned char *sig = NULL;
+        size_t sig_len = 0;
+        if (rsa_sign_message(session->privkey, sig_input, sig_input_len, &sig, &sig_len) != 0) {
+            if (sig)
+                free(sig);
+            return -1;
+        }
+
+        char sig_b64[RSA2048_SIG_PEM_SIZE] = {0};
+        if (base64_encode(sig, sig_len, sig_b64) < 0) {
+            if (sig)
+                free(sig);
+            return -1;
+        }
+
+        len = protocol_prepare_sesskey_resp_msg(msg, sizeof(msg), session, session->nonce, reply_nonce, sig_b64);
         if (sig)
             free(sig);
     } else if (type == PROTOCOL_MSG && payload) {
@@ -485,7 +690,7 @@ int network_disconnect(NetworkState *net) {
         pthread_mutex_unlock(&net->lock);
         return -1; // No active connection
     }
-    network_send(net->active_sock, PROTOCOL_BYE, "Peer Left", NULL, 0, 0);
+    network_send(net->active_sock, PROTOCOL_BYE, "Peer Left", NULL, NULL, 0);
     set_peer_disconnect_states(net);
     pthread_mutex_unlock(&net->lock);
     pthread_join(net->message_thread, NULL);
@@ -548,18 +753,35 @@ void network_command(NetworkState *network, const char *command) {
         }
         char k_type[16], k_fresh[16] = {0};
         if (sscanf(command + 10, "%15s %15s", k_type, k_fresh) < 1) {
-            printf("Invalid command format. Use: :exchange {keytype=pub|session} [{freshness=new}]\n");
+            printf("Invalid command format. Use: :exchange {keytype=pub|aes} [{freshness=new}]\n");
         } else if (!strcmp(k_type, "pub")) {
             int pkey_sent = 0;
             if (network->local_session->pubkey && network->local_session->privkey && strcmp(k_fresh, "new") != 0) {
-                pkey_sent = send_existing_pubkey(network, PROTOCOL_PKEY_OFFER, 0);
+                pkey_sent = send_existing_pubkey(network, PROTOCOL_PUBKEY_OFFER, 0);
             } else {
-                pkey_sent = send_new_pubkey(network, PROTOCOL_PKEY_OFFER, 0);
+                printf("Generating new RSA-2048 key pair...\n");
+                pkey_sent = send_new_pubkey(network, PROTOCOL_PUBKEY_OFFER, 0);
             }
             if (pkey_sent < 0) {
                 printf("Error: Failed to send public key\n");
             } else {
-                printf("Public key exchange initiated\n%s", network->local_session->pubkey);
+                printf("Public key exchange initiated\n");
+                printf("Sent public key to %s\n%s", network->remote_session->username, network->local_session->pubkey);
+            }
+        } else if (!strcmp(k_type, "aes")) {
+            if (!network->local_session->pubkey || !network->local_session->privkey ||
+                !network->remote_session->pubkey) {
+                printf("Error: Public keys not available for session key exchange\n");
+                pthread_mutex_unlock(&network->lock);
+                return;
+            }
+            if (send_new_sesskey(network) < 0) {
+                printf("Error: Failed to send session key\n");
+            } else {
+                char hex_str[2 * AES256_GCM_KEY_SIZE + 1] = {0};
+                bytes_to_hex(network->remote_session->sesskey, AES256_GCM_KEY_SIZE, hex_str);
+                printf("Session key exchange initiated\nSent session key to %s\n%s\n",
+                       network->remote_session->username, hex_str);
             }
         } else {
             printf("Error: Unsupported key type '%s'\n", k_type);
@@ -570,7 +792,7 @@ void network_command(NetworkState *network, const char *command) {
         if (!network->session_active) {
             printf("Error: No active connection\n");
         } else {
-            network_send(network->active_sock, PROTOCOL_MSG, command, NULL, 0, 0);
+            network_send(network->active_sock, PROTOCOL_MSG, command, NULL, NULL, 0);
         }
         pthread_mutex_unlock(&network->lock);
     }
