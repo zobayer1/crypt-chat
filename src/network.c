@@ -198,11 +198,11 @@ static void *message_callback(void *arg) {
                 pthread_mutex_unlock(&net->lock);
                 continue;
             }
-            char msg[PROTOCOL_MSG_MAX_LEN] = {0};
+            char msg_b64[PROTOCOL_MSG_MAX_LEN] = {0};
             uuid_t remote_id;
             uint64_t msg_nonce = 0;
             int parsed =
-                protocol_parse_cipher_plaintext(body, &remote_id, &msg_nonce, type, msg, PROTOCOL_MSG_MAX_LEN - 1);
+                protocol_parse_cipher_plaintext(body, &remote_id, &msg_nonce, type, msg_b64, PROTOCOL_MSG_MAX_LEN - 1);
             if (parsed < 0 || uuid_compare(remote_id, net->remote_session->sid) ||
                 msg_nonce <= net->remote_session->nonce) {
                 network_send(net->active_sock, PROTOCOL_REJECT, "Bad Message Parameters", net->local_session, NULL, 0);
@@ -210,10 +210,18 @@ static void *message_callback(void *arg) {
                 strcpy(reason, "Bad Message Parameters");
                 break;
             }
+            unsigned char msg[PROTOCOL_MSG_MAX_LEN] = {0};
+            int decoded_len = base64_decode(msg_b64, strlen(msg_b64), msg);
+            if (decoded_len < 0) {
+                network_send(net->active_sock, PROTOCOL_REJECT, "Bad Message Format", net->local_session, NULL, 0);
+                pthread_mutex_unlock(&net->lock);
+                strcpy(reason, "Bad Message Format");
+                break;
+            }
             net->remote_session->nonce = msg_nonce;
             net->local_session->nonce =
                 max_uint64(max_uint64(msg_nonce, net->local_session->nonce + 1), generate_nonce());
-            print_and_signal(net->pipefd[1], "\1", "\n[%s]> %s\n", net->remote_session->username, msg);
+            print_and_signal(net->pipefd[1], "\1", "\n[%s]> %s", net->remote_session->username, msg);
             pthread_mutex_unlock(&net->lock);
         } else if (type == PROTOCOL_PUBKEY_OFFER) {
             pthread_mutex_lock(&net->lock);
@@ -751,7 +759,10 @@ ssize_t network_send(const int sock, const ProtocolType type, const char *payloa
         if (sig)
             free(sig);
     } else if (type == PROTOCOL_PLAIN && payload && session) {
-        len = protocol_prepare_plaintext_msg(msg, sizeof(msg), session, payload, 1);
+        char payload_b64[PROTOCOL_MSG_MAX_LEN] = {0};
+        if (base64_encode((const unsigned char *)payload, strlen(payload), payload_b64) < 0)
+            return -1;
+        len = protocol_prepare_plaintext_msg(msg, sizeof(msg), session, payload_b64, 1);
     } else if (type == PROTOCOL_CIPHER && payload && session && remote_session) {
         char plain[PROTOCOL_MSG_MAX_LEN] = {0};
         protocol_prepare_plaintext_msg(plain, sizeof(plain), session, payload, 0);
@@ -917,7 +928,7 @@ void network_command(NetworkState *network, const char *command) {
         pthread_mutex_lock(&network->lock);
         if (!network->session_active) {
             printf("Error: No active connection\n");
-        } else {
+        } else if (strlen(command) > 0 && command[0] != '\n') {
             network->local_session->nonce = max_uint64(generate_nonce(), network->local_session->nonce + 1);
             if (network->remote_session->sesskey) {
                 network_send(network->active_sock, PROTOCOL_CIPHER, command, network->local_session,

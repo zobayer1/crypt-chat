@@ -1,10 +1,10 @@
-# CSE 722 Assignment 1: Encrypted Messaging Application
+# CryptoChat
 
 A secure TCP messaging application with end-to-end encryption, supporting:
 
-- RSA Public Key Exchange
-- AES-256 Encrypted Messaging
-- Wireshark Packet Verification
+- RSA-2048 Public Key Exchange
+- AES-256 Shared Key Exchange
+- End-to-end Encrypted Messaging
 
 ## Dependencies
 
