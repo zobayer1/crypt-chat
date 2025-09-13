@@ -20,7 +20,7 @@ void uuid_to_str(const uuid_t uuid, char *out);
 
 void bytes_to_hex(const unsigned char *bytes, size_t len, char *out);
 
-uint64_t generate_nonce();
+uint64_t generate_nonce(void);
 
 int nonce_within_grace(uint64_t nonce1, uint64_t nonce2);
 

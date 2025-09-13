@@ -20,6 +20,6 @@ typedef struct {
     unsigned char *sesskey;
 } UserSession;
 
-UserSession *session_init();
+UserSession *session_init(void);
 
 #endif // SESSION_H

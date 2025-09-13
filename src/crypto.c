@@ -9,7 +9,7 @@
 #include <openssl/rand.h>
 #include <sys/time.h>
 
-static int handle_openssl_error() {
+static int handle_openssl_error(void) {
     ERR_print_errors_fp(stdout);
     return EXIT_FAILURE;
 }
@@ -18,7 +18,7 @@ void uuid_random(uuid_t *uuid) { uuid_generate_random(*uuid); }
 
 void uuid_to_str(const uuid_t uuid, char *out) { uuid_unparse(uuid, out); }
 
-uint64_t generate_nonce() {
+uint64_t generate_nonce(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;

@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-UserSession *session_init() {
+UserSession *session_init(void) {
     UserSession *local_session = malloc(sizeof(UserSession));
     memset(local_session, 0, sizeof(UserSession));
 
