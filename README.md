@@ -1,4 +1,4 @@
-# CryptoChat
+# CryptChat
 
 A secure TCP messaging application with end-to-end encryption, supporting:
 
@@ -30,26 +30,26 @@ clang-format -i src/*.cpp include/*.h
 ## Build Instructions
 
 1. Create a build directory:
-   ```bash
-   mkdir -p build
-   cd build
-   ```
+    ```bash
+    mkdir -p build
+    cd build
+    ```
 
 2. Run CMake to configure the project:
-   ```bash
-   cmake ..
-   ```
+    ```bash
+    cmake ..
+    ```
 
 3. Build the project:
-   ```bash
-   make
-   ```
+    ```bash
+    make
+    ```
 
 4. Run the executable with a port number (e.g., 8090):
-   ```bash
-   export PORT=8090
-   ../bin/cryptochat $PORT
-   ```
+    ```bash
+    export PORT=8090
+    ../bin/cryptchat $PORT
+    ```
 
 ---
 
